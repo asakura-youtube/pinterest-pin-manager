@@ -2,8 +2,10 @@
 // @name         Pinterest 総合管理ツール
 // @namespace    https://example.com/
 // @version      6.5.3
-// @description  Pinterestのピンを収集して、いいね数の表示・お気に入り管理・履歴保存ができる便利ツール。
+// @description  Pinterestのピンを収集して、いいね数の表示・お気に入り管理・履歴保存ができる便利ツール（非公式）
 // @author       あさくら
+// @downloadURL  https://raw.githubusercontent.com/asakura-youtube/pinterest-pin-manager/main/pinterest-pin-manager.user.js
+// @updateURL    https://raw.githubusercontent.com/asakura-youtube/pinterest-pin-manager/main/pinterest-pin-manager.user.js
 // @match        https://jp.pinterest.com/*
 // @match        https://*.pinterest.com/*
 // @run-at       document-idle
