@@ -872,6 +872,10 @@
     saveStateAll(persisted);
   }
 
+  function getDefaultFavId() {
+    return persisted?.favorites?.order?.[0] || null;
+  }
+
   function ensureDefaultFavoriteList() {
     if (persisted.favorites.order.length > 0) return;
     const id = uuid();
@@ -879,7 +883,6 @@
     persisted.favorites.lists[id] = { id, name: 'お気に入り', pinIds: [] };
     saveStateAll(persisted);
   }
-  ensureDefaultFavoriteList();
 
   function getActiveFavId() {
     const id = ui.state.activeFavId || persisted.ui.activeFavId;
@@ -905,6 +908,41 @@
     return id;
   }
 
+  function chooseFavListIdByPrompt() {
+    const order = persisted?.favorites?.order || [];
+    const lists = persisted?.favorites?.lists || {};
+    const items = order.map((id) => lists[id]).filter(Boolean);
+
+    if (!items.length) return null;
+
+    const lines = items.map((it, i) => `${i + 1}. ${it.name}（${it.pinIds?.length || 0}件）`);
+    lines.push(''); 
+    lines.push('n. 新規リストを作って追加');
+
+    const msg =
+      '追加先のお気に入りリストを選んでください（番号 / n）\n\n' +
+      lines.join('\n');
+
+    const ans = prompt(msg, '1');
+    if (!ans) return null;
+
+    const t = String(ans).trim().toLowerCase();
+
+    if (t === 'n') {
+      const name = prompt('新しいお気に入りリスト名', `お気に入り ${items.length + 1}`);
+      if (!name) return null;
+      return createFavList(name);
+    }
+
+    const n = parseInt(t, 10);
+    if (!Number.isFinite(n) || n < 1 || n > items.length) {
+      alert('入力が不正です（番号 1〜' + items.length + ' / n）');
+      return null;
+    }
+
+    return items[n - 1].id;
+  }
+
   function moveFavList(id, dir) {
     const order = persisted.favorites.order;
     const idx = order.indexOf(id);
@@ -923,6 +961,9 @@
   }
 
   function deleteFavList(id) {
+    const defaultId = getDefaultFavId();
+    if (id === defaultId) return; // ★デフォルトは削除不可
+
     if (!persisted.favorites.lists[id]) return;
     if (persisted.favorites.order.length <= 1) return; // 最低1つ残す
     delete persisted.favorites.lists[id];
@@ -1709,6 +1750,62 @@
       btnBulkDl.textContent = '一括DL';
       btnBulkDl.style.cssText = ui.buttonCss(false);
 
+      // ★お気に入り保存先（ドロップダウン）
+      const favTarget = document.createElement('select');
+      favTarget.style.cssText = ui.selectCss();
+      favTarget.style.minWidth = '220px';
+
+      // options
+      const rebuildFavTargetOptions = () => {
+        favTarget.innerHTML = '';
+
+        const defaultId = getDefaultFavId();
+        const order = persisted?.favorites?.order || [];
+        const lists = persisted?.favorites?.lists || {};
+
+        for (const id of order) {
+          const it = lists[id];
+          if (!it) continue;
+          const opt = document.createElement('option');
+          opt.value = id;
+          opt.textContent = `${it.name}${id === defaultId ? '（デフォルト）' : ''}`;
+          favTarget.appendChild(opt);
+        }
+
+        // （任意）新規作成
+        const optNew = document.createElement('option');
+        optNew.value = '__new__';
+        optNew.textContent = '＋新規リスト作成…';
+        favTarget.appendChild(optNew);
+
+        // 初期値：前回選択がなければデフォルト
+        const init = ui.state.favSaveTargetId || defaultId || (order[0] || '');
+        favTarget.value = init || (defaultId || '');
+      };
+
+      rebuildFavTargetOptions();
+
+      favTarget.addEventListener('change', () => {
+        if (favTarget.value === '__new__') {
+          const name = prompt('新しいお気に入りリスト名', `お気に入り ${persisted.favorites.order.length + 1}`);
+          if (!name) {
+            // キャンセル時はデフォルトへ戻す
+            favTarget.value = getDefaultFavId() || '';
+            return;
+          }
+          const newId = createFavList(name);
+          ui.state.favSaveTargetId = newId;
+          persistUIState();
+          rebuildFavTargetOptions();
+          favTarget.value = newId;
+          ui.toast('リスト追加');
+          return;
+        }
+
+        ui.state.favSaveTargetId = favTarget.value;
+        persistUIState();
+      });
+
       const btnFavSave = document.createElement('button');
       btnFavSave.textContent = 'お気に入り保存';
       btnFavSave.style.cssText = ui.buttonCss(true);
@@ -1740,17 +1837,30 @@
       });
 
       btnFavSave.addEventListener('click', () => {
-        const listId = getActiveFavId();
-        if (!listId) {
-          ui.toast('お気に入りリストなし');
-          return;
-        }
         const ids = Array.from(selectedPins);
         if (ids.length === 0) {
           ui.toast('選択なし');
           return;
         }
+
+        // ★保存先：ドロップダウンで選ばれていればそこ、なければデフォルト
+        const defaultId = getDefaultFavId();
+        const listId =
+          (ui.state.favSaveTargetId && persisted.favorites.lists[ui.state.favSaveTargetId])
+            ? ui.state.favSaveTargetId
+            : defaultId;
+
+        if (!listId) {
+          ui.toast('お気に入りリストなし');
+          return;
+        }
+
         addPinsToFav(listId, ids);
+
+        // 気持ちよさ：保存先をアクティブに
+        ui.state.activeFavId = listId;
+        persistUIState();
+
         ui.toast(`お気に入り保存: ${ids.length}`);
       });
 
@@ -1773,7 +1883,7 @@
       close.addEventListener('click', () => ui.closeSortView());
 
       right.appendChild(btnBulkDl);
-      right.appendChild(btnFavSave);
+      right.appendChild(favTarget);
       right.appendChild(btnSnapSave);
       right.appendChild(btnClearSel);
       right.appendChild(close);
@@ -3114,6 +3224,13 @@
     btnDel.onclick = () => {
       const id = ui.state.activeFavId;
       if (!id) return;
+
+      const defaultId = getDefaultFavId();
+      if (id === defaultId) {
+        ui.toast('デフォルトの「お気に入り」は削除できません');
+        return;
+      }
+
       if (!confirm('このお気に入りリストを削除しますか？（最低1つは残ります）')) return;
       deleteFavList(id);
       ensureActive();
