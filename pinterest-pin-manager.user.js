@@ -1884,6 +1884,7 @@
 
       right.appendChild(btnBulkDl);
       right.appendChild(favTarget);
+      right.appendChild(btnFavSave);
       right.appendChild(btnSnapSave);
       right.appendChild(btnClearSel);
       right.appendChild(close);
