@@ -45,6 +45,9 @@
 
 ## インストール方法
 
+### ユーザースクリプトのインストール
+[pinterest-pin-manager.user.js をインストール](https://raw.githubusercontent.com/asakura-youtube/pinterest-pin-manager/main/pinterest-pin-manager.user.js)
+
 1. Google Chrome に Tampermonkey をインストールします
 2. 本リポジトリ内のユーザースクリプトを Tampermonkey に追加します
 3. Pinterest のページを開くと自動的に有効になります
