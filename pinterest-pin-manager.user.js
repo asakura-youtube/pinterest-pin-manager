@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pinterest 総合管理ツール
 // @namespace    https://example.com/
-// @version      1.0.0
+// @version      1.1.0
 // @description  Pinterestのピンを収集して、いいね数の表示・お気に入り管理・履歴保存ができる便利ツール（非公式）
 // @author       あさくら
 // @downloadURL  https://raw.githubusercontent.com/asakura-youtube/pinterest-pin-manager/main/pinterest-pin-manager.user.js
@@ -2306,25 +2306,6 @@
         ui.renderSortGridDebounced(true);
       });
 
-      // ★追加：並び替え画面でも dblclick で viewer を開く
-      // - source:'sort'
-      // - ids: 現在の並び替え配列（フィルタ/ソート反映済み）
-      card.addEventListener('dblclick', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-
-        // 現在の並び替え配列（表示条件反映済み）
-        const arr = ui._buildSortArray();
-        const idsAll = arr.map(x => x.pinId);
-        const idx = idsAll.indexOf(p.pinId);
-
-        ui.openViewer(p.pinId, {
-          source: 'sort',
-          ids: idsAll,
-          index: idx,
-        });
-      });
-
       controlRow.appendChild(btnCopy);
       controlRow.appendChild(btnCopyUrl);
       controlRow.appendChild(btnCheck);
@@ -2748,10 +2729,41 @@
         gap:10px;
       `;
 
+      // ★左側：タイトル＋位置表示（別表示）
       const left = document.createElement('div');
-      left.id = 'pt-viewer-title';
-      left.textContent = '—';
-      left.style.cssText = 'font-weight:1000; opacity:0.95;';
+      left.style.cssText = `
+        display:flex;
+        flex-direction:column;
+        gap:4px;
+        min-width: 160px;
+      `;
+
+      const titleEl = document.createElement('div');
+      titleEl.id = 'pt-viewer-title';
+      titleEl.textContent = '—';
+      titleEl.style.cssText = 'font-weight:1000; opacity:0.95;';
+
+      // ★追加：何枚目/全枚数（タイトルと分離）
+      const posEl = document.createElement('div');
+      posEl.id = 'pt-viewer-pos';
+      posEl.textContent = '— / —';
+      posEl.style.cssText = `
+        display:inline-flex;
+        align-items:center;
+        width: fit-content;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,0.14);
+        background: rgba(255,255,255,0.08);
+        color:#fff;
+        font-weight:900;
+        font-size:12px;
+        opacity:0.92;
+        white-space:nowrap;
+      `;
+
+      left.appendChild(titleEl);
+      left.appendChild(posEl);
 
       const right = document.createElement('div');
       right.style.cssText = 'display:flex; gap:8px; align-items:center; flex-wrap:wrap;';
@@ -3040,8 +3052,9 @@
       ui.ensureViewer();
 
       const title = document.getElementById('pt-viewer-title');
+      const posEl = document.getElementById('pt-viewer-pos');
       const content = document.getElementById('pt-viewer-content');
-      if (!title || !content) return;
+      if (!title || !posEl || !content) return;
 
       const pinId = ui.state.viewerPinId;
       const count = ui.state.viewerCountStr != null ? ui.state.viewerCountStr : '—';
@@ -3049,9 +3062,13 @@
       const ids = ui.state.viewerIds || [];
       let idx = ui.state.viewerIndex;
       if (!Number.isFinite(idx) || idx < 0) idx = ids.indexOf(pinId);
-      const posText = (ids.length && idx >= 0) ? `${idx + 1} / ${ids.length}` : '— / —';
 
-      title.textContent = `❤ ${count} / ${posText} / pin: ${pinId} / img: ${HIGHRES_SIZE_SEGMENT}`;
+      // ★位置表示（posElに出す）
+      const posText = (ids.length && idx >= 0) ? `${idx + 1} / ${ids.length}` : '— / —';
+      posEl.textContent = posText;
+
+      // ★タイトルは「意味が混ざらない」ように従来情報のみ
+      title.textContent = `❤ ${count} / pin: ${pinId} / img: ${HIGHRES_SIZE_SEGMENT}`;
 
       content.innerHTML = '';
 
