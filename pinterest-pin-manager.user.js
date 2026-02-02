@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pinterest 総合管理ツール
 // @namespace    https://example.com/
-// @version      1.1.0
+// @version      1.0.0
 // @description  Pinterestのピンを収集して、いいね数の表示・お気に入り管理・履歴保存ができる便利ツール（非公式）
 // @author       あさくら
 // @downloadURL  https://raw.githubusercontent.com/asakura-youtube/pinterest-pin-manager/main/pinterest-pin-manager.user.js
@@ -3058,7 +3058,7 @@
       const url = ui.state.viewerImgUrl;
       if (!url) {
         const m = document.createElement('div');
-        m.textContent = 'このpinは画像URLが未収集です（通常モードで収集してから試してください）';
+        m.textContent = 'このpinは画像URLが未収集です（「画像取得」ボタンから画像を再取得してください）';
         m.style.cssText = 'opacity:0.85; font-weight:900; padding:12px;';
         content.appendChild(m);
         return;
