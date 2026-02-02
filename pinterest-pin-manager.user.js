@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pinterest 総合管理ツール
 // @namespace    https://example.com/
-// @version      1.0.0
+// @version      1.1.0
 // @description  Pinterestのピンを収集して、いいね数の表示・お気に入り管理・履歴保存ができる便利ツール（非公式）
 // @author       あさくら
 // @downloadURL  https://raw.githubusercontent.com/asakura-youtube/pinterest-pin-manager/main/pinterest-pin-manager.user.js
@@ -1294,6 +1294,12 @@
       viewerPinHref: null,  // pinページ
       viewerCountStr: null,
 
+      // ★追加：viewerの「どの一覧から開いたか」コンテキスト
+      // source: 'favorites' | 'history' | 'sort' | null
+      viewerSource: null,
+      viewerIds: [],        // 現在の一覧pinId配列（ホイール移動用）
+      viewerIndex: -1,      // viewerIds内の現在位置
+
       // virtual scroll
       vs: {
         wrapEl: null,
@@ -2177,12 +2183,13 @@
       card.style.cssText = `
         display:block;
         background: rgba(0,0,0,0.55);
-        border:1px solid rgba(255,255,255,0.12);
+        border:1px solid rgba(255,255,255,${isSelected ? '0.30' : '0.12'});
         border-radius:14px;
         overflow:hidden;
         text-decoration:none;
         color:#fff;
-        outline: ${isSelected ? '2px solid rgba(255,255,255,0.65)' : 'none'};
+        outline: ${isSelected ? '3px solid rgba(150,220,255,0.55)' : 'none'};
+        box-shadow: ${isSelected ? '0 0 0 2px rgba(150,220,255,0.12), 0 0 18px rgba(120,200,255,0.10)' : 'none'};
       `;
 
       const imgWrap = document.createElement('div');
@@ -2297,6 +2304,25 @@
         if (selectedPins.has(p.pinId)) selectedPins.delete(p.pinId);
         else selectedPins.add(p.pinId);
         ui.renderSortGridDebounced(true);
+      });
+
+      // ★追加：並び替え画面でも dblclick で viewer を開く
+      // - source:'sort'
+      // - ids: 現在の並び替え配列（フィルタ/ソート反映済み）
+      card.addEventListener('dblclick', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+
+        // 現在の並び替え配列（表示条件反映済み）
+        const arr = ui._buildSortArray();
+        const idsAll = arr.map(x => x.pinId);
+        const idx = idsAll.indexOf(p.pinId);
+
+        ui.openViewer(p.pinId, {
+          source: 'sort',
+          ids: idsAll,
+          index: idx,
+        });
       });
 
       controlRow.appendChild(btnCopy);
@@ -2634,15 +2660,26 @@
     // =========================================================
     // Viewer
     // =========================================================
-    openViewer(pinId) {
+    openViewer(pinId, ctx = {}) {
       const p = pinStore.get(pinId) || { pinId, thumbUrl: null, href: pinUrl(pinId), countStr: null, countNum: null };
       const hi = toHighResPinimgUrl(p.thumbUrl) || null;
+
+      // ★コンテキスト
+      const source = ctx.source || null; // 'favorites' | 'history' | 'sort' | null
+      const ids = Array.isArray(ctx.ids) ? ctx.ids.filter(Boolean) : [];
+      const index = (typeof ctx.index === 'number')
+        ? ctx.index
+        : (ids.length ? ids.indexOf(pinId) : -1);
 
       ui.state.viewerOpen = true;
       ui.state.viewerPinId = pinId;
       ui.state.viewerImgUrl = hi;
       ui.state.viewerPinHref = p.href || pinUrl(pinId);
       ui.state.viewerCountStr = p.countStr;
+
+      ui.state.viewerSource = source;
+      ui.state.viewerIds = ids;
+      ui.state.viewerIndex = index;
 
       ui.ensureViewer(true);
       ui.renderViewer(true);
@@ -2729,10 +2766,29 @@
       btnCopyUrl.textContent = 'Copy URL';
       btnCopyUrl.style.cssText = ui.buttonCss(true);
 
-      const btnDl = document.createElement('button');
-      btnDl.type = 'button';
-      btnDl.textContent = 'DL';
-      btnDl.style.cssText = ui.buttonCss(true);
+      // ★変更：単体DL（この画像をDL）
+      const btnDlThis = document.createElement('button');
+      btnDlThis.type = 'button';
+      btnDlThis.textContent = 'この画像をDL';
+      btnDlThis.style.cssText = ui.buttonCss(true);
+
+      // ★追加：一括DL（選択）
+      const btnBulkDl = document.createElement('button');
+      btnBulkDl.type = 'button';
+      btnBulkDl.textContent = '一括DL';
+      btnBulkDl.style.cssText = ui.buttonCss(true);
+
+      // ★追加：単体削除（この画像を削除）
+      const btnDelThis = document.createElement('button');
+      btnDelThis.type = 'button';
+      btnDelThis.textContent = 'この画像を削除';
+      btnDelThis.style.cssText = ui.buttonCss(true);
+
+      // ★追加：一括削除（選択）
+      const btnBulkDel = document.createElement('button');
+      btnBulkDel.type = 'button';
+      btnBulkDel.textContent = '一括削除';
+      btnBulkDel.style.cssText = ui.buttonCss(true);
 
       const btnOpen = document.createElement('button');
       btnOpen.type = 'button';
@@ -2772,7 +2828,18 @@
         }
       });
 
-      btnDl.addEventListener('click', async () => {
+      // ★一括DL（選択）
+      btnBulkDl.addEventListener('click', async () => {
+        const set = ui._getViewerSelectionSet();
+        const ids = Array.from(set || []);
+        if (!ids.length) { ui.toast('選択なし'); return; }
+        if (ids.length > BULK_DOWNLOAD_MAX) { ui.toast(`多すぎ（最大 ${BULK_DOWNLOAD_MAX}）`); return; }
+        ui.toast(`DL開始: ${ids.length}`);
+        await ui.bulkDownloadSelectedFast(ids);
+      });
+
+      // ★この画像DL（単体）
+      btnDlThis.addEventListener('click', async () => {
         const pinId = ui.state.viewerPinId;
         const p = pinStore.get(pinId) || { pinId, countNum: null, countStr: null, thumbUrl: null, href: pinUrl(pinId) };
         const url = ui.state.viewerImgUrl || toHighResPinimgUrl(p.thumbUrl) || p.href;
@@ -2786,6 +2853,107 @@
         }
       });
 
+      // ★一括削除（選択）
+      btnBulkDel.addEventListener('click', () => {
+        const src = ui.state.viewerSource;
+        const set = ui._getViewerSelectionSet();
+        const ids = Array.from(set || []);
+        if (!ids.length) { ui.toast('選択なし'); return; }
+
+        // favorites: アクティブリストから外す
+        if (src === 'favorites') {
+          const listId = ui.state.activeFavId;
+          const list = persisted?.favorites?.lists?.[listId];
+          if (!list) { ui.toast('リスト不明'); return; }
+          if (!confirm(`このお気に入りリストから ${ids.length} 件を削除しますか？`)) return;
+
+          const del = new Set(ids);
+          list.pinIds = (list.pinIds || []).filter(pid => !del.has(pid));
+          saveStateAll(persisted);
+
+          // 選択解除
+          ui.state.modalSelectedPinIds = new Set();
+          ui.state.modalSelectedPinId = null;
+          ui.state.modalLastClickedPinId = null;
+
+          ui.toast(`削除: ${ids.length} 件`);
+          ui.renderModal(true);
+          ui.closeViewer();
+          return;
+        }
+
+        // history: アクティブ履歴（snapshot）から外す
+        if (src === 'history') {
+          const sid = ui.state.activeSnapId;
+          const snap = sid ? persisted?.snapshots?.items?.[sid] : null;
+          if (!snap) { ui.toast('履歴不明'); return; }
+          if (!confirm(`この履歴から ${ids.length} 件を削除しますか？`)) return;
+
+          const del = new Set(ids);
+          snap.pinIds = (snap.pinIds || []).filter(pid => !del.has(pid));
+          saveStateAll(persisted);
+
+          // 選択解除
+          ui.state.modalSelectedPinIds = new Set();
+          ui.state.modalSelectedPinId = null;
+          ui.state.modalLastClickedPinId = null;
+
+          ui.toast(`削除: ${ids.length} 件`);
+          ui.renderModal(true);
+          ui.closeViewer();
+          return;
+        }
+
+        ui.toast('この画面では削除未対応');
+      });
+
+      // ★この画像削除（単体）
+      btnDelThis.addEventListener('click', () => {
+        const src = ui.state.viewerSource;
+        const pinId = ui.state.viewerPinId;
+        if (!pinId) return;
+
+        if (src === 'favorites') {
+          const listId = ui.state.activeFavId;
+          const list = persisted?.favorites?.lists?.[listId];
+          if (!list) { ui.toast('リスト不明'); return; }
+          if (!confirm('この画像をこのお気に入りリストから削除しますか？')) return;
+
+          list.pinIds = (list.pinIds || []).filter(pid => pid !== pinId);
+          saveStateAll(persisted);
+
+          // 選択Setからも外す
+          ui.state.modalSelectedPinIds?.delete?.(pinId);
+
+          ui.toast('削除しました');
+          ui.renderModal(true);
+
+          // 次へ表示（あれば）
+          ui._viewerMove(+1);
+          return;
+        }
+
+        if (src === 'history') {
+          const sid = ui.state.activeSnapId;
+          const snap = sid ? persisted?.snapshots?.items?.[sid] : null;
+          if (!snap) { ui.toast('履歴不明'); return; }
+          if (!confirm('この画像をこの履歴から削除しますか？')) return;
+
+          snap.pinIds = (snap.pinIds || []).filter(pid => pid !== pinId);
+          saveStateAll(persisted);
+
+          ui.state.modalSelectedPinIds?.delete?.(pinId);
+
+          ui.toast('削除しました');
+          ui.renderModal(true);
+
+          ui._viewerMove(+1);
+          return;
+        }
+
+        ui.toast('この画面では削除未対応');
+      });
+
       btnOpen.addEventListener('click', () => {
         const href = ui.state.viewerPinHref || pinUrl(ui.state.viewerPinId);
         if (!href) return;
@@ -2794,7 +2962,10 @@
 
       right.appendChild(btnCopyPng);
       right.appendChild(btnCopyUrl);
-      right.appendChild(btnDl);
+      right.appendChild(btnBulkDl);
+      right.appendChild(btnDlThis);
+      right.appendChild(btnBulkDel);
+      right.appendChild(btnDelThis);
       right.appendChild(btnOpen);
       right.appendChild(btnClose);
 
@@ -2812,11 +2983,57 @@
         overflow:auto;
       `;
 
+      // ★ホイールで前後移動（次/前）
+      content.addEventListener('wheel', (e) => {
+        if (!ui.state.viewerOpen) return;
+
+        // スクロールでページ自体が動くのを防ぐ
+        e.preventDefault();
+        e.stopPropagation();
+
+        const dy = e.deltaY || 0;
+        if (dy > 0) ui._viewerMove(+1);   // 下に回したら次
+        else if (dy < 0) ui._viewerMove(-1); // 上に回したら前
+      }, { passive: false });
+
       panel.appendChild(top);
       panel.appendChild(content);
       viewer.appendChild(panel);
       mount.appendChild(viewer);
     },
+
+    // ★viewerが操作する「選択Set」を取得
+    _getViewerSelectionSet() {
+      const src = ui.state.viewerSource;
+      if (src === 'sort') return selectedPins; // 並び替えの選択
+      // favorites/history はモーダル選択を使う
+      return ui.state.modalSelectedPinIds || new Set();
+    },
+
+    // ★viewerの前後移動（ホイール用）
+    _viewerMove(delta) {
+      const ids = ui.state.viewerIds || [];
+      if (!ids.length) return;
+
+      let idx = ui.state.viewerIndex;
+      if (!Number.isFinite(idx) || idx < 0) idx = ids.indexOf(ui.state.viewerPinId);
+      if (idx < 0) idx = 0;
+
+      const next = idx + delta;
+      if (next < 0 || next >= ids.length) return; // 端で止める（ループしたければここ変更）
+
+      const pinId = ids[next];
+      ui.state.viewerIndex = next;
+
+      const p = pinStore.get(pinId) || { pinId, thumbUrl: null, href: pinUrl(pinId), countStr: null, countNum: null };
+      ui.state.viewerPinId = pinId;
+      ui.state.viewerImgUrl = toHighResPinimgUrl(p.thumbUrl) || null;
+      ui.state.viewerPinHref = p.href || pinUrl(pinId);
+      ui.state.viewerCountStr = p.countStr;
+
+      ui.renderViewer(true);
+    },
+
 
     renderViewer(force = false) {
       if (!ui.state.viewerOpen) return;
@@ -2828,7 +3045,13 @@
 
       const pinId = ui.state.viewerPinId;
       const count = ui.state.viewerCountStr != null ? ui.state.viewerCountStr : '—';
-      title.textContent = `❤ ${count} / pin: ${pinId} / img: ${HIGHRES_SIZE_SEGMENT}`;
+
+      const ids = ui.state.viewerIds || [];
+      let idx = ui.state.viewerIndex;
+      if (!Number.isFinite(idx) || idx < 0) idx = ids.indexOf(pinId);
+      const posText = (ids.length && idx >= 0) ? `${idx + 1} / ${ids.length}` : '— / —';
+
+      title.textContent = `❤ ${count} / ${posText} / pin: ${pinId} / img: ${HIGHRES_SIZE_SEGMENT}`;
 
       content.innerHTML = '';
 
@@ -2844,21 +3067,45 @@
       const img = document.createElement('img');
       img.src = url;
       img.alt = `pin ${pinId}`;
+      const set = ui._getViewerSelectionSet();
+      const isSelected = set && ui.state.viewerPinId && set.has(ui.state.viewerPinId);
       img.style.cssText = `
         max-width: 100%;
         max-height: 100%;
         height: auto;
         width: auto;
         border-radius: 12px;
-        border: 1px solid rgba(255,255,255,0.12);
+        border: 1px solid rgba(255,255,255,${isSelected ? '0.30' : '0.12'});
+        outline: ${isSelected ? '3px solid rgba(150,220,255,0.55)' : 'none'};
+        box-shadow: ${isSelected ? '0 0 0 2px rgba(150,220,255,0.10), 0 0 18px rgba(120,200,255,0.10)' : 'none'};
         background: rgba(0,0,0,0.25);
         cursor: pointer;
       `;
 
-      // ★ 画像クリックで Viewer を閉じる
+      // ★シングルクリック：選択/解除（viewerSourceに応じたSetを操作）
       img.addEventListener('click', (e) => {
         e.preventDefault();
-        e.stopPropagation(); // 背景クリック等との干渉防止
+        e.stopPropagation();
+
+        const pinId = ui.state.viewerPinId;
+        if (!pinId) return;
+
+        const set = ui._getViewerSelectionSet();
+        if (set.has(pinId)) set.delete(pinId);
+        else set.add(pinId);
+
+        // モーダル側の選択数表示などがあれば更新
+        try { ui._updateModalRightCount?.(); } catch {}
+        try { ui._rerenderModalPreviewIfAny?.(); } catch {}
+
+        // 見た目更新（選択中は枠を強く）
+        ui.renderViewer(true);
+      });
+
+      // ★ダブルクリック：一覧に戻る（Viewerを閉じる）
+      img.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         ui.closeViewer();
       });
 
@@ -3595,8 +3842,9 @@
           height:100%;
           border-radius:12px;
           overflow:hidden;
-          border:1px solid rgba(255,255,255,${selected ? '0.55' : '0.12'});
-          outline:${selected ? '2px solid rgba(255,255,255,0.55)' : 'none'};
+          border:1px solid rgba(255,255,255,${selected ? '0.30' : '0.12'});
+          outline:${selected ? '3px solid rgba(150,220,255,0.55)' : 'none'};
+          box-shadow:${selected ? '0 0 0 2px rgba(150,220,255,0.10), 0 0 14px rgba(120,200,255,0.10)' : 'none'};
           background: rgba(0,0,0,0.45);
           cursor:pointer;
           position:relative;
@@ -3623,7 +3871,15 @@
         item.addEventListener('dblclick', (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
-          ui.openViewer(id);
+
+          const idsAll = getIds(); // このお気に入りリストのpinIds
+          const idx = idsAll.indexOf(id);
+
+          ui.openViewer(id, {
+            source: 'favorites',
+            ids: idsAll,
+            index: idx,
+          });
         });
 
         const img = document.createElement('div');
@@ -4178,8 +4434,9 @@
           height:100%;
           border-radius:12px;
           overflow:hidden;
-          border:1px solid rgba(255,255,255,${selected ? '0.55' : '0.12'});
-          outline:${selected ? '2px solid rgba(255,255,255,0.55)' : 'none'};
+          border:1px solid rgba(255,255,255,${selected ? '0.30' : '0.12'});
+          outline:${selected ? '3px solid rgba(150,220,255,0.55)' : 'none'};
+          box-shadow:${selected ? '0 0 0 2px rgba(150,220,255,0.10), 0 0 14px rgba(120,200,255,0.10)' : 'none'};
           background: rgba(0,0,0,0.45);
           cursor:pointer;
           position:relative;
@@ -4206,7 +4463,15 @@
         item.addEventListener('dblclick', (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
-          ui.openViewer(id);
+
+          const idsAll = getIds(); // この履歴（snapshot）のpinIds
+          const idx = idsAll.indexOf(id);
+
+          ui.openViewer(id, {
+            source: 'history',
+            ids: idsAll,
+            index: idx,
+          });
         });
 
         const img = document.createElement('div');
