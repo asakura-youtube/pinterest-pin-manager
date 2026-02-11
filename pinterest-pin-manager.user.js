@@ -5930,6 +5930,51 @@
         card.appendChild(desc);
         card.appendChild(row);
 
+        // =========================================================
+        // Backup warning (アップデート前の注意)
+        // =========================================================
+        if (updateNeeded) {
+
+          const warnCard = document.createElement('div');
+          warnCard.style.cssText = `
+            margin-top: 4px;
+            padding: 10px 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 200, 80, 0.35);
+            background: rgba(255, 180, 60, 0.10);
+            display:flex;
+            flex-direction:column;
+            gap:6px;
+          `;
+
+          const warnTitle = document.createElement('div');
+          warnTitle.textContent = '⚠️ アップデート前の注意';
+          warnTitle.style.cssText = `
+            font-weight:1000;
+            color: rgba(255, 210, 120, 0.95);
+          `;
+
+          const warnText = document.createElement('div');
+          warnText.style.cssText = `
+            opacity:0.92;
+            font-weight:800;
+            line-height:1.6;
+            white-space:pre-wrap;
+          `;
+          warnText.textContent =
+            'アップデートを行う前に、必ずバックアップを取ってください。\n\n' +
+            '手順：\n' +
+            '① 左メニューの「バックアップ」を開く\n' +
+            '② 「エクスポート（JSON）」をクリック\n' +
+            '③ 保存されたJSONファイルを安全な場所に保管\n\n' +
+            '※ アップデートによりデータ構造が変更された場合、復元が必要になることがあります。';
+
+          warnCard.appendChild(warnTitle);
+          warnCard.appendChild(warnText);
+
+          card.appendChild(warnCard);
+        }
+
         // -------------------------
         // Update notes (changelog) view
         // -------------------------
