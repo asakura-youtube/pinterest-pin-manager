@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pinterest 総合管理ツール
 // @namespace    https://example.com/
-// @version      2.0.0
+// @version      2.1.0
 // @description  Pinterestのピンを収集して、いいね数の表示・お気に入り管理・履歴保存ができる便利ツール（非公式）
 // @author       あさくら
 // @downloadURL  https://raw.githubusercontent.com/asakura-youtube/pinterest-pin-manager/main/pinterest-pin-manager.user.js
@@ -64,6 +64,20 @@
   const VS_GAP = 12;
   const VS_CARD_EST_H = 360; // 目安（renderCardの高さに合わせる）
   const VS_OVERSCAN_ROWS = 3;
+
+  // =========================================================
+  // Exclude low-res thumbnail
+  // =========================================================
+  function isExcludedThumbnailUrl(url) {
+    if (!url) return false;
+
+    // 除外対象
+    if (url.startsWith('https://i.pinimg.com/75x75_RS/')) {
+      return true;
+    }
+
+    return false;
+  }
 
   // =========================================================
   // Utilities
@@ -694,7 +708,9 @@
         setCachedCount(pinId, finalCount);
 
         const patch = { countStr: finalCount, countNum: normalizeCount(finalCount) };
-        if (thumbUrl) patch.thumbUrl = thumbUrl;
+        if (thumbUrl && !isExcludedThumbnailUrl(thumbUrl)) {
+          patch.thumbUrl = thumbUrl;
+        }
         upsertPin(pinId, patch);
 
         if (cardForBadgeUpdate) setBadgeCount(cardForBadgeUpdate, finalCount);
@@ -733,9 +749,16 @@
       const absHref = href?.startsWith('http') ? href : `${location.origin}${href}`;
       const thumb = extractThumbnailFromCard(card);
 
+      let finalThumb = thumb || (pinStore.get(pinId)?.thumbUrl ?? null);
+
+      // 除外URLなら無効化
+      if (isExcludedThumbnailUrl(finalThumb)) {
+        finalThumb = null;
+      }
+
       upsertPin(pinId, {
         href: absHref || pinUrl(pinId),
-        thumbUrl: thumb || (pinStore.get(pinId)?.thumbUrl ?? null),
+        thumbUrl: finalThumb,
       });
 
       ensureBadge(card);
@@ -1011,7 +1034,7 @@
     if (!items.length) return null;
 
     const lines = items.map((it, i) => `${i + 1}. ${it.name}（${it.pinIds?.length || 0}件）`);
-    lines.push(''); 
+    lines.push('');
     lines.push('n. 新規リストを作って追加');
 
     const msg =
@@ -1288,7 +1311,9 @@
             countNum: normalizeCount(finalCount),
           };
 
-          if (thumbUrl) patch.thumbUrl = thumbUrl;
+          if (thumbUrl && !isExcludedThumbnailUrl(thumbUrl)) {
+            patch.thumbUrl = thumbUrl;
+          }
 
           upsertPin(pinId, patch);
 
@@ -2644,6 +2669,70 @@
     },
 
     // =========================================================
+    // Update notes (changelog) fetcher (callable from anywhere)
+    // =========================================================
+    async ensureUpdateNotes(force = false) {
+      try {
+        if (!ui.state.updateNotes) ui.state.updateNotes = {};
+        // ui.state.updateNotes = { ts, text, error }
+
+        const requestText = (url) => new Promise((resolve, reject) => {
+          try {
+            if (typeof GM_xmlhttpRequest === 'function') {
+              GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                onload: (res) => resolve(res.responseText || ''),
+                onerror: () => reject(new Error('request failed')),
+                ontimeout: () => reject(new Error('request timeout')),
+              });
+              return;
+            }
+          } catch {}
+          fetch(url, { cache: 'no-store' })
+            .then(r => r.text())
+            .then(resolve)
+            .catch(reject);
+        });
+
+        const cacheMs = 24 * 60 * 60 * 1000;
+        const now = Date.now();
+        const lastTs = ui.state.updateNotes.ts || 0;
+
+        if (!force && lastTs && (now - lastTs) < cacheMs) {
+          return;
+        }
+
+        // ★ここをあなたの更新情報ファイルに合わせる（CHANGELOG.md 推奨）
+        const notesUrl = 'https://raw.githubusercontent.com/asakura-youtube/pinterest-pin-manager/main/CHANGELOG.md';
+
+        ui.state.updateNotes.error = null;
+
+        const txt = await requestText(notesUrl);
+        ui.state.updateNotes.ts = now;
+        ui.state.updateNotes.text = String(txt || '').trim();
+        ui.state.updateNotes.error = null;
+
+        persistUIState();
+
+        // 表示中なら即再描画（ヘルプ画面に反映）
+        if (ui.state.modalOpen && ui.state.modalMode === 'help') {
+          ui.renderModal(true);
+        }
+      } catch (e) {
+        const msg = e?.message || 'update notes fetch failed';
+        ui.state.updateNotes.ts = Date.now();
+        ui.state.updateNotes.text = '';
+        ui.state.updateNotes.error = msg;
+        persistUIState();
+
+        if (ui.state.modalOpen && ui.state.modalMode === 'help') {
+          ui.renderModal(true);
+        }
+      }
+    },
+
+    // =========================================================
     // Modal
     // =========================================================
     openModal(mode) {
@@ -2784,7 +2873,7 @@
       btnTabIO.style.cssText = ui.buttonCss(ui.state.modalMode !== 'help');
       btnTabIO.addEventListener('click', () => {
         // ★追加：ヘルプクリックでも更新チェック（押した瞬間に走る）
-        try { ui.ensureUpdateCheck(false); } catch {}        
+        try { ui.ensureUpdateCheck(false); } catch {}
         ui.state.modalMode = 'help';
         ui.state.modalSelectedPinId = null;
         ui.state.modalSelectedPinIds = new Set();
@@ -5489,6 +5578,9 @@
       // （ローカル関数は廃止し、ui.ensureUpdateCheck に統一）
       try { ui.ensureUpdateCheck(false); } catch {}
 
+      // ★更新情報（changelog）も非同期取得（UIブロックしない）
+      try { ui.ensureUpdateNotes(false); } catch {}
+
       const updateNeeded = !!ui.state.updateNeeded;
 
       // ---- layout root ----
@@ -5837,6 +5929,57 @@
 
         card.appendChild(desc);
         card.appendChild(row);
+
+        // -------------------------
+        // Update notes (changelog) view
+        // -------------------------
+        const notesWrap = document.createElement('div');
+        notesWrap.style.cssText = `
+          margin-top: 10px;
+          padding-top: 10px;
+          border-top: 1px solid rgba(255,255,255,0.10);
+          display:flex;
+          flex-direction:column;
+          gap:8px;
+        `;
+
+        const notesHead = document.createElement('div');
+        notesHead.textContent = '更新情報';
+        notesHead.style.cssText = 'font-weight:1000; opacity:0.95;';
+
+        const notesMeta = document.createElement('div');
+        notesMeta.style.cssText = 'opacity:0.75; font-weight:900; font-size:12px; white-space:pre-wrap;';
+        const notesTs = ui.state.updateNotes?.ts || 0;
+        notesMeta.textContent = notesTs ? `最終取得: ${new Date(notesTs).toLocaleString()}` : '最終取得: -';
+
+        const notesBody = document.createElement('div');
+        notesBody.style.cssText = `
+          opacity:0.88;
+          font-weight:800;
+          line-height:1.65;
+          white-space:pre-wrap;
+          padding: 10px;
+          border: 1px solid rgba(255,255,255,0.10);
+          border-radius: 12px;
+          background: rgba(255,255,255,0.04);
+        `;
+
+        const notesErr = ui.state.updateNotes?.error || null;
+        const notesText = ui.state.updateNotes?.text || '';
+
+        if (notesErr) {
+          notesBody.textContent = `更新情報の取得に失敗しました（${notesErr}）`;
+        } else if (!notesText) {
+          notesBody.textContent = '更新情報を取得中...';
+        } else {
+          notesBody.textContent = notesText;
+        }
+
+        notesWrap.appendChild(notesHead);
+        notesWrap.appendChild(notesMeta);
+        notesWrap.appendChild(notesBody);
+
+        card.appendChild(notesWrap);
 
         // 右側が overflow:hidden なので、カード側でスクロールを持つ
         card.style.overflow = 'auto';
@@ -7955,7 +8098,7 @@
     ui.renderModal(true);
   },
   };
-  
+
   // =========================================================
   // Init
   // =========================================================
