@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pinterest 総合管理ツール
 // @namespace    https://example.com/
-// @version      2.1.0
+// @version      2.2.0
 // @description  Pinterestのピンを収集して、いいね数の表示・お気に入り管理・履歴保存ができる便利ツール（非公式）
 // @author       あさくら
 // @downloadURL  https://raw.githubusercontent.com/asakura-youtube/pinterest-pin-manager/main/pinterest-pin-manager.user.js
@@ -533,7 +533,7 @@
       line-height:1;
       font-weight:800;
       backdrop-filter: blur(6px);
-      pointer-events:none;
+      pointer-events:auto;
       user-select:none;
       white-space:nowrap;
     `;
@@ -762,6 +762,7 @@
       });
 
       ensureBadge(card);
+      ensureCardFavoriteButton(card, pinId);
 
       const domCount = findCountInCardDom(card);
       if (domCount != null) {
@@ -777,6 +778,12 @@
           ensureCount(pinId, card);
         }
       }
+    }
+
+    try {
+      ensureCloseupFavoriteButton();
+    } catch (e) {
+      log('ensureCloseupFavoriteButton failed', e);
     }
 
     ui.updateInfo(found);
@@ -1059,6 +1066,424 @@
     }
 
     return items[n - 1].id;
+  }
+
+  // =========================================================
+  // Favorite quick menu / save buttons
+  // =========================================================
+  function getPinIdFromUrlLike(url) {
+    const s = String(url || '');
+    const m = s.match(/\/pin\/(\d+)\//);
+    return m ? m[1] : null;
+  }
+
+  function getCurrentCloseupPinId() {
+    return getPinIdFromUrlLike(location.href);
+  }
+
+  function savePinsToDefaultFavorite(pinIds, opt = {}) {
+    const ids = Array.from(new Set((pinIds || []).filter(Boolean)));
+    if (!ids.length) {
+      ui.toast('保存対象のピンが見つかりません');
+      return false;
+    }
+
+    ensureDefaultFavoriteList();
+    const defaultId = getDefaultFavId();
+    if (!defaultId) {
+      ui.toast('デフォルトお気に入りリストが見つかりません');
+      return false;
+    }
+
+    const list = persisted?.favorites?.lists?.[defaultId];
+    const before = new Set(list?.pinIds || []);
+    addPinsToFav(defaultId, ids);
+
+    let added = 0;
+    for (const id of ids) {
+      if (!before.has(id)) added++;
+    }
+
+    if (opt.toast !== false) {
+      ui.toast(`デフォルトお気に入りに追加: ${added} 件`);
+    }
+    return true;
+  }
+
+  function savePinsToFavoriteList(listId, pinIds, opt = {}) {
+    const ids = Array.from(new Set((pinIds || []).filter(Boolean)));
+    if (!ids.length) {
+      ui.toast('保存対象のピンが見つかりません');
+      return false;
+    }
+    if (!listId || !persisted?.favorites?.lists?.[listId]) {
+      ui.toast('お気に入りリストが見つかりません');
+      return false;
+    }
+
+    const list = persisted.favorites.lists[listId];
+    const before = new Set(list.pinIds || []);
+    addPinsToFav(listId, ids);
+
+    let added = 0;
+    for (const id of ids) {
+      if (!before.has(id)) added++;
+    }
+
+    if (opt.toast !== false) {
+      ui.toast(`「${list.name}」へ追加: ${added} 件`);
+    }
+    return true;
+  }
+
+  function createEl(tag, props = {}, styleText = '') {
+    const el = document.createElement(tag);
+    Object.assign(el, props);
+    if (styleText) el.style.cssText = styleText;
+    return el;
+  }
+
+  function closeFavoriteQuickMenu() {
+    document.querySelectorAll('[data-pt-fav-quick-menu="1"]').forEach((el) => el.remove());
+  }
+
+  function openFavoriteQuickMenu(anchorEl, pinIds, opt = {}) {
+    closeFavoriteQuickMenu();
+
+    const ids = Array.from(new Set((pinIds || []).filter(Boolean)));
+    if (!ids.length) {
+      ui.toast('保存対象のピンが見つかりません');
+      return;
+    }
+
+    ensureDefaultFavoriteList();
+
+    const overlay = createEl('div', {}, `
+      position: fixed;
+      inset: 0;
+      z-index: 2147483647;
+      background: rgba(0,0,0,0.08);
+      display: block;
+    `);
+    overlay.setAttribute('data-pt-fav-quick-menu', '1');
+
+    const rect = anchorEl.getBoundingClientRect();
+
+    const menu = createEl('div', {}, `
+      position: fixed;
+      left: ${Math.max(8, rect.left)}px;
+      top: ${Math.min(window.innerHeight - 16, rect.bottom + 8)}px;
+      z-index: 2147483647;
+      min-width: 300px;
+      max-width: 360px;
+      background: rgba(18,18,18,0.96);
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 16px;
+      box-shadow: 0 18px 40px rgba(0,0,0,0.38);
+      backdrop-filter: blur(10px);
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    `);
+    menu.setAttribute('data-pt-fav-quick-menu', '1');
+
+    overlay.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeFavoriteQuickMenu();
+    });
+
+    menu.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    });
+
+    menu.addEventListener('pointerdown', (ev) => {
+      ev.stopPropagation();
+    });
+
+    const title = createEl('div', { textContent: 'お気に入りへ保存' }, `
+      font-size: 20px;
+      font-weight: 900;
+      opacity: 0.96;
+      padding: 4px 6px 2px 6px;
+    `);
+    menu.appendChild(title);
+
+    const desc = createEl(
+      'div',
+      { textContent: `${ids.length}件のピンを保存します` },
+      `
+      font-size: 13px;
+      opacity: 0.78;
+      padding: 0 6px 6px 6px;
+    `
+    );
+    menu.appendChild(desc);
+
+    const body = createEl('div', {}, `
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    `);
+    menu.appendChild(body);
+
+    const mkBtn = (label, onClick, opt2 = {}) => {
+      const btn = createEl('button', { type: 'button', textContent: label }, `
+        width: 100%;
+        text-align: left;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: ${opt2.bg || 'rgba(255,255,255,0.08)'};
+        color: #fff;
+        border-radius: 12px;
+        padding: 14px 16px;
+        font-size: 14px;
+        font-weight: 800;
+        cursor: pointer;
+      `);
+
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        onClick(ev);
+      });
+
+      return btn;
+    };
+
+    function getItemsFresh() {
+      const order = persisted?.favorites?.order || [];
+      const lists = persisted?.favorites?.lists || {};
+      return order.map((id) => lists[id]).filter(Boolean);
+    }
+
+    function renderMainMenu() {
+      body.innerHTML = '';
+
+      const btnChoose = mkBtn('＋既存リストを選択して追加', () => {
+        renderListMenu();
+      });
+      body.appendChild(btnChoose);
+
+      const btnCreate = mkBtn('＋新規リストを作成して追加', () => {
+        const items = getItemsFresh();
+        const name = prompt('新しいお気に入りリスト名', `お気に入り ${items.length + 1}`);
+        if (!name) return;
+
+        const trimmed = name.trim();
+        if (!trimmed) return;
+
+        const newId = createFavList(trimmed);
+        savePinsToFavoriteList(newId, ids);
+        closeFavoriteQuickMenu();
+      });
+      body.appendChild(btnCreate);
+
+      const btnClose = mkBtn('閉じる', () => {
+        closeFavoriteQuickMenu();
+      });
+      body.appendChild(btnClose);
+    }
+
+    function renderListMenu() {
+      body.innerHTML = '';
+
+      const subTitle = createEl('div', { textContent: '追加先リストを選択' }, `
+        font-size: 14px;
+        font-weight: 900;
+        opacity: 0.92;
+        padding: 2px 6px 2px 6px;
+      `);
+      body.appendChild(subTitle);
+
+      const items = getItemsFresh();
+
+      if (!items.length) {
+        const empty = createEl('div', { textContent: '既存リストがありません' }, `
+          font-size: 13px;
+          opacity: 0.8;
+          padding: 4px 6px 8px 6px;
+        `);
+        body.appendChild(empty);
+      } else {
+        for (const list of items) {
+          const count = Array.isArray(list.pinIds) ? list.pinIds.length : 0;
+          const btn = mkBtn(`「${list.name}」へ追加（${count}件）`, () => {
+            savePinsToFavoriteList(list.id, ids);
+            closeFavoriteQuickMenu();
+          });
+          body.appendChild(btn);
+        }
+      }
+
+      const btnBack = mkBtn('← 戻る', () => {
+        renderMainMenu();
+      }, { bg: 'rgba(255,255,255,0.06)' });
+      body.appendChild(btnBack);
+
+      const btnClose = mkBtn('閉じる', () => {
+        closeFavoriteQuickMenu();
+      }, { bg: 'rgba(255,255,255,0.06)' });
+      body.appendChild(btnClose);
+    }
+
+    renderMainMenu();
+
+    document.body.appendChild(overlay);
+    document.body.appendChild(menu);
+
+    const menuRect = menu.getBoundingClientRect();
+    if (menuRect.right > window.innerWidth - 8) {
+      menu.style.left = `${Math.max(8, window.innerWidth - menuRect.width - 8)}px`;
+    }
+    if (menuRect.bottom > window.innerHeight - 8) {
+      menu.style.top = `${Math.max(8, rect.top - menuRect.height - 8)}px`;
+    }
+
+    const onEsc = (ev) => {
+      if (ev.key !== 'Escape') return;
+      document.removeEventListener('keydown', onEsc, true);
+      closeFavoriteQuickMenu();
+    };
+
+    document.addEventListener('keydown', onEsc, true);
+  }
+
+  function attachFavoriteQuickActions(buttonEl, pinIds, opt = {}) {
+    if (!buttonEl || buttonEl.dataset.ptFavQuickBound === '1') return;
+    buttonEl.dataset.ptFavQuickBound = '1';
+
+    let pressTimer = null;
+    let longPressTriggered = false;
+    const holdMs = opt.holdMs || 450;
+
+    const clearPressTimer = () => {
+      if (pressTimer) {
+        clearTimeout(pressTimer);
+        pressTimer = null;
+      }
+    };
+
+    buttonEl.addEventListener('click', (ev) => {
+      if (longPressTriggered) {
+        longPressTriggered = false;
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
+      ev.preventDefault();
+      ev.stopPropagation();
+      openFavoriteQuickMenu(buttonEl, pinIds, opt);
+    });
+
+    buttonEl.addEventListener('contextmenu', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      openFavoriteQuickMenu(buttonEl, pinIds, opt);
+    });
+
+    buttonEl.addEventListener('pointerdown', (ev) => {
+      if (ev.button !== 0) return;
+      longPressTriggered = false;
+      clearPressTimer();
+      pressTimer = setTimeout(() => {
+        longPressTriggered = true;
+        openFavoriteQuickMenu(buttonEl, pinIds, opt);
+      }, holdMs);
+    });
+
+    buttonEl.addEventListener('pointerup', clearPressTimer);
+    buttonEl.addEventListener('pointercancel', clearPressTimer);
+    buttonEl.addEventListener('pointerleave', clearPressTimer);
+    buttonEl.addEventListener('dragstart', clearPressTimer);
+  }
+
+  function ensureCardFavoriteButton(card, pinId) {
+    if (!card || !pinId) return;
+
+    const badge = ensureBadge(card);
+    if (!badge) return;
+
+    let btn = badge.querySelector('[data-pt-fav-badge-btn="1"]');
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.setAttribute('data-pt-fav-badge-btn', '1');
+      btn.title = 'クリック: デフォルトお気に入り / 右クリック・長押し: 保存先を選ぶ';
+      btn.textContent = '保存';
+      btn.style.cssText = `
+        pointer-events: auto;
+        border: 1px solid rgba(255,255,255,0.18);
+        background: rgba(255,255,255,0.12);
+        color: #fff;
+        border-radius: 999px;
+        padding: 4px 8px;
+        font-size: 11px;
+        line-height: 1;
+        font-weight: 900;
+        cursor: pointer;
+      `;
+      badge.appendChild(btn);
+    }
+
+    attachFavoriteQuickActions(btn, [pinId], { holdMs: 450 });
+  }
+
+  function ensureCloseupFavoriteButton() {
+    const root = document.querySelector('[data-test-id="closeup-action-items"]');
+    if (!root) return;
+
+    let host =
+      root.querySelector('[data-test-id="reactions-count"]')?.parentElement ||
+      root.firstElementChild ||
+      root;
+
+    if (!host) host = root;
+
+    let wrap = root.querySelector('[data-pt-closeup-fav-wrap="1"]');
+    if (!wrap) {
+      wrap = document.createElement('div');
+      wrap.setAttribute('data-pt-closeup-fav-wrap', '1');
+      wrap.style.cssText = `
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        margin-left: 4px;
+        pointer-events:auto;
+      `;
+      host.insertAdjacentElement('afterend', wrap);
+    }
+
+    let btn = wrap.querySelector('[data-pt-closeup-fav-btn="1"]');
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.setAttribute('data-pt-closeup-fav-btn', '1');
+      btn.setAttribute('aria-label', 'お気に入りへ保存');
+      btn.title = 'お気に入りへ保存';
+      btn.style.cssText = `
+        min-width: 48px;
+        height: 48px;
+        padding: 0 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(0,0,0,0.08);
+        background: rgba(255,255,255,0.96);
+        color: #111;
+        font-size: 12px;
+        font-weight: 900;
+        cursor: pointer;
+      `;
+      btn.textContent = '保存';
+      wrap.appendChild(btn);
+    }
+
+    const pinId = getCurrentCloseupPinId();
+    if (!pinId) return;
+
+    attachFavoriteQuickActions(btn, [pinId], { holdMs: 450 });
+
   }
 
   function moveFavList(id, dir) {
@@ -1473,6 +1898,7 @@
       if (ui.state.sortViewOpen) ui.ensureSortOverlay();
       if (ui.state.modalOpen) ui.ensureModal();
       if (ui.state.viewerOpen) ui.ensureViewer();
+      try { ensureCloseupFavoriteButton(); } catch {}
       persistUIState();
       if (persisted._restoredFromGM) {
         persisted._restoredFromGM = false;
