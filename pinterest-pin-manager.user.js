@@ -1,7 +1,6 @@
 // ==UserScript==
 // @name         Pinterest 総合管理ツール
-// @namespace    https://example.com/
-// @version      2.2.0
+// @version      2.2.1
 // @description  Pinterestのピンを収集して、いいね数の表示・お気に入り管理・履歴保存ができる便利ツール（非公式）
 // @author       あさくら
 // @downloadURL  https://raw.githubusercontent.com/asakura-youtube/pinterest-pin-manager/main/pinterest-pin-manager.user.js
@@ -726,6 +725,74 @@
     });
   }
 
+  function collectSinglePinFromAnchor(a, opt = {}) {
+    const pinId = extractPinIdFromAnchor(a);
+    if (!pinId) return null;
+
+    _hydrateFromPersisted(pinId);
+
+    const card = findCardFromAnchor(a);
+    const href = a.getAttribute('href');
+    const absHref = href?.startsWith('http') ? href : `${location.origin}${href}`;
+
+    let finalThumb = null;
+    if (card) {
+      const thumb = extractThumbnailFromCard(card);
+      finalThumb = thumb || (pinStore.get(pinId)?.thumbUrl ?? null);
+      if (isExcludedThumbnailUrl(finalThumb)) {
+        finalThumb = null;
+      }
+    } else {
+      finalThumb = pinStore.get(pinId)?.thumbUrl ?? null;
+      if (isExcludedThumbnailUrl(finalThumb)) {
+        finalThumb = null;
+      }
+    }
+
+    upsertPin(pinId, {
+      href: absHref || pinUrl(pinId),
+      thumbUrl: finalThumb,
+    });
+
+    if (card) {
+      if (!opt.skipBadge) ensureBadge(card);
+      if (!opt.skipFavoriteButton) ensureCardFavoriteButton(card, pinId);
+
+      const domCount = findCountInCardDom(card);
+      if (domCount != null) {
+        setCachedCount(pinId, domCount);
+        upsertPin(pinId, {
+          countStr: domCount,
+          countNum: normalizeCount(domCount),
+        });
+        if (!opt.skipBadge) setBadgeCount(card, domCount);
+      } else {
+        const cached = getCachedCount(pinId);
+        if (cached != null) {
+          upsertPin(pinId, {
+            countStr: cached,
+            countNum: normalizeCount(cached),
+          });
+          if (!opt.skipBadge) setBadgeCount(card, cached);
+        } else if (!opt.skipEnsureCount) {
+          ensureCount(pinId, card);
+        }
+      }
+    } else {
+      const cached = getCachedCount(pinId);
+      if (cached != null) {
+        upsertPin(pinId, {
+          countStr: cached,
+          countNum: normalizeCount(cached),
+        });
+      } else if (!opt.skipEnsureCount) {
+        ensureCount(pinId, null);
+      }
+    }
+
+    return pinId;
+  }
+
   // =========================================================
   // Scan: collect pins as they appear
   // =========================================================
@@ -734,50 +801,9 @@
     let found = 0;
 
     for (const a of anchors) {
-      const pinId = extractPinIdFromAnchor(a);
+      const pinId = collectSinglePinFromAnchor(a);
       if (!pinId) continue;
-
-      // ★追加：ページ更新直後でも、保存済みの thumb/❤/href を即復元
-      _hydrateFromPersisted(pinId);
-
       found++;
-
-      const card = findCardFromAnchor(a);
-      if (!card) continue;
-
-      const href = a.getAttribute('href');
-      const absHref = href?.startsWith('http') ? href : `${location.origin}${href}`;
-      const thumb = extractThumbnailFromCard(card);
-
-      let finalThumb = thumb || (pinStore.get(pinId)?.thumbUrl ?? null);
-
-      // 除外URLなら無効化
-      if (isExcludedThumbnailUrl(finalThumb)) {
-        finalThumb = null;
-      }
-
-      upsertPin(pinId, {
-        href: absHref || pinUrl(pinId),
-        thumbUrl: finalThumb,
-      });
-
-      ensureBadge(card);
-      ensureCardFavoriteButton(card, pinId);
-
-      const domCount = findCountInCardDom(card);
-      if (domCount != null) {
-        setCachedCount(pinId, domCount);
-        upsertPin(pinId, { countStr: domCount, countNum: normalizeCount(domCount) });
-        setBadgeCount(card, domCount);
-      } else {
-        const cached = getCachedCount(pinId);
-        if (cached != null) {
-          setBadgeCount(card, cached);
-          upsertPin(pinId, { countStr: cached, countNum: normalizeCount(cached) });
-        } else {
-          ensureCount(pinId, card);
-        }
-      }
     }
 
     try {
@@ -1081,6 +1107,123 @@
     return getPinIdFromUrlLike(location.href);
   }
 
+  function resolveFavoriteSourceAnchor(buttonEl, pinId = null) {
+    if (!buttonEl) return null;
+
+    // 1) ボタン自体が pin anchor 内にある場合
+    const direct = buttonEl.closest?.('a[href^="/pin/"][href*="/"]');
+    if (direct) return direct;
+
+    // 2) 同一カード内から pin anchor を探す
+    const card = findCardFromAnchor(buttonEl);
+    if (card) {
+      const cardAnchor = card.querySelector('a[href^="/pin/"][href*="/"]');
+      if (cardAnchor) return cardAnchor;
+    }
+
+    // 3) 明示 pinId があるなら、その pinId の anchor をページ内から探す
+    if (pinId) {
+      const byId = document.querySelector(`a[href*="/pin/${pinId}/"]`);
+      if (byId) return byId;
+    }
+
+    return null;
+  }
+
+  function collectSinglePinFromAnchor(a, opt = {}) {
+    const pinId = extractPinIdFromAnchor(a);
+    if (!pinId) return null;
+
+    // 保存済みがあれば先に反映
+    _hydrateFromPersisted(pinId);
+
+    const card = findCardFromAnchor(a);
+    const href = a.getAttribute('href');
+    const absHref = href?.startsWith('http') ? href : `${location.origin}${href}`;
+
+    const thumbFromCard = card ? extractThumbnailFromCard(card) : null;
+    let finalThumb = thumbFromCard || (pinStore.get(pinId)?.thumbUrl ?? null);
+
+    if (isExcludedThumbnailUrl(finalThumb)) {
+      finalThumb = null;
+    }
+
+    upsertPin(pinId, {
+      href: absHref || pinUrl(pinId),
+      thumbUrl: finalThumb,
+    });
+
+    if (card) {
+      if (!opt.skipBadge) ensureBadge(card);
+      if (!opt.skipFavoriteButton) ensureCardFavoriteButton(card, pinId);
+
+      const domCount = findCountInCardDom(card);
+      if (domCount != null) {
+        setCachedCount(pinId, domCount);
+        upsertPin(pinId, {
+          countStr: domCount,
+          countNum: normalizeCount(domCount),
+        });
+        if (!opt.skipBadge) setBadgeCount(card, domCount);
+      } else {
+        const cached = getCachedCount(pinId);
+        if (cached != null) {
+          upsertPin(pinId, {
+            countStr: cached,
+            countNum: normalizeCount(cached),
+          });
+          if (!opt.skipBadge) setBadgeCount(card, cached);
+        } else if (!opt.skipEnsureCount) {
+          ensureCount(pinId, card);
+        }
+      }
+    } else {
+      const cached = getCachedCount(pinId);
+      if (cached != null) {
+        upsertPin(pinId, {
+          countStr: cached,
+          countNum: normalizeCount(cached),
+        });
+      } else if (!opt.skipEnsureCount) {
+        ensureCount(pinId, null);
+      }
+    }
+
+    return pinId;
+  }
+
+  function collectSinglePinById(pinId, opt = {}) {
+    if (!pinId) return null;
+
+    // まず保存済みを注入
+    _hydrateFromPersisted(pinId);
+
+    const existing = pinStore.get(pinId) || null;
+    const anchor = document.querySelector(`a[href*="/pin/${pinId}/"]`);
+
+    if (anchor) {
+      return collectSinglePinFromAnchor(anchor, opt);
+    }
+
+    // anchor が無いケース（クローズアップ等）のフォールバック
+    upsertPin(pinId, {
+      href: existing?.href || pinUrl(pinId),
+      thumbUrl: !isExcludedThumbnailUrl(existing?.thumbUrl) ? (existing?.thumbUrl || null) : null,
+    });
+
+    const cached = getCachedCount(pinId);
+    if (cached != null) {
+      upsertPin(pinId, {
+        countStr: cached,
+        countNum: normalizeCount(cached),
+      });
+    } else if (!opt.skipEnsureCount) {
+      ensureCount(pinId, null);
+    }
+
+    return pinId;
+  }
+
   function savePinsToDefaultFavorite(pinIds, opt = {}) {
     const ids = Array.from(new Set((pinIds || []).filter(Boolean)));
     if (!ids.length) {
@@ -1366,6 +1509,25 @@
       }
     };
 
+    const preparePinMetaBeforeOpen = () => {
+      const ids = Array.from(new Set((pinIds || []).filter(Boolean)));
+      if (!ids.length) return;
+
+      for (const pinId of ids) {
+        const anchor = resolveFavoriteSourceAnchor(buttonEl, pinId);
+
+        if (anchor) {
+          collectSinglePinFromAnchor(anchor, {
+            skipFavoriteButton: true,
+          });
+        } else {
+          collectSinglePinById(pinId, {
+            skipFavoriteButton: true,
+          });
+        }
+      }
+    };
+
     buttonEl.addEventListener('click', (ev) => {
       if (longPressTriggered) {
         longPressTriggered = false;
@@ -1375,12 +1537,16 @@
       }
       ev.preventDefault();
       ev.stopPropagation();
+
+      preparePinMetaBeforeOpen();
       openFavoriteQuickMenu(buttonEl, pinIds, opt);
     });
 
     buttonEl.addEventListener('contextmenu', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
+
+      preparePinMetaBeforeOpen();
       openFavoriteQuickMenu(buttonEl, pinIds, opt);
     });
 
@@ -1390,6 +1556,7 @@
       clearPressTimer();
       pressTimer = setTimeout(() => {
         longPressTriggered = true;
+        preparePinMetaBeforeOpen();
         openFavoriteQuickMenu(buttonEl, pinIds, opt);
       }, holdMs);
     });
